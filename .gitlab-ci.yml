@@ -1,0 +1,19 @@
+
+variables:
+  SBT_IMAGE: sbtscala/scala-sbt:eclipse-temurin-focal-17.0.10_7_1.9.9_3.4.0
+
+stages:
+  - build
+  - test
+
+build-job:
+  stage: build
+  image: $SBT_IMAGE
+  script:
+    - sbt compile
+
+test-job:
+  stage: test
+  image: $SBT_IMAGE
+  script:
+    - sbt test
