@@ -1,4 +1,13 @@
+val scala3Version = "3.4.0"
 
-scalaVersion := "3.4.0"
+lazy val root = project
+  .in(file("."))
+  .settings(
+    name := "homework6",
+    version := "0.1.0-SNAPSHOT",
 
-name := "homework6"
+    scalaVersion := scala3Version,
+
+    libraryDependencies += "org.scalameta" %% "munit" % "0.7.29" % Test,
+    libraryDependencies += "org.scalatest" %% "scalatest" % "3.2.17" % Test
+  )
