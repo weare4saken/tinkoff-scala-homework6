@@ -1,42 +1,77 @@
 package com.mypackage
 
 import scala.concurrent.{ExecutionContext, Future}
-import scala.util.{Failure, Success}
+import scala.util.{Failure, Success, Try}
+import scala.collection.mutable.ListBuffer
 
 object DelayedFutureOpsImpl extends DelayedFutureOps {
 
   def sequence[A](list: List[DelayedFuture[A]])(using ExecutionContext): DelayedFuture[List[A]] = () => {
-    val futures = list.map(df => df())
-    Future.sequence(futures)
+    val buffer = ListBuffer.empty[A]
+    val futureResult = list.foldRight(Future.successful(buffer)) { (delayed, accFuture) =>
+      for {
+        acc <- accFuture
+        result <- delayed()
+      } yield {
+        acc.prepend(result)
+        acc
+      }
+    }
+    futureResult.map(_.toList)
   }
 
   def seqPar[A](list: List[DelayedFuture[A]])(using ExecutionContext): DelayedFuture[(List[Throwable], List[A])] = () => {
-    val futures = list.map(df => df().transform {
-      case Success(value) => Success(Right(value))
-      case Failure(ex) => Success(Left(ex))
-    })
+    val errors = ListBuffer.empty[Throwable]
+    val successes = ListBuffer.empty[A]
 
-    Future.sequence(futures).map { results =>
-      val (errors, successes) = results.partitionMap(identity)
-      (errors, successes)
+    def helper(remaining: List[DelayedFuture[A]]): Future[(List[Throwable], List[A])] = {
+      remaining match {
+        case Nil => Future.successful((errors.toList, successes.toList))
+        case head :: tail =>
+          head().transform(result => Success(Try(result))).flatMap {
+            case Success(Success(value)) =>
+              successes.append(value)
+              helper(tail)
+            case Success(Failure(ex)) =>
+              errors.append(ex)
+              helper(tail)
+            case Failure(ex) =>
+              errors.append(ex)
+              helper(tail)
+          }
+      }
     }
+    helper(list)
   }
 
   def traverse[A, B](list: List[A])(f: A => DelayedFuture[B])(using ExecutionContext): DelayedFuture[List[B]] = () => {
-    val futures = list.map(a => f(a)())
-    Future.sequence(futures)
+    val buffer = ListBuffer.empty[B]
+    val futureResult = list.foldRight(Future.successful(buffer)) { (a, accFuture) =>
+      for {
+        acc <- accFuture
+        result <- f(a)()
+      } yield {
+        acc.prepend(result)
+        acc
+      }
+    }
+    futureResult.map(_.toList)
   }
 
   def batchTraverse[A](in: List[A], batchSize: Int, futures: DelayedFuture[A])(using ExecutionContext): DelayedFuture[List[A]] = () => {
     val batches = in.grouped(batchSize).toList
 
-    def processBatch(acc: Future[List[A]], batch: List[A]): Future[List[A]] = {
-      val batchFutures = batch.map(_ => futures())
-      val batchResult = Future.sequence(batchFutures)
-      acc.flatMap(lst => batchResult.map(lst ++ _))
+    def processBatch(acc: Future[ListBuffer[A]], batch: List[A]): Future[ListBuffer[A]] = {
+      acc.flatMap { lst =>
+        traverse(batch)(_ => futures).apply().map { results =>
+          lst.appendAll(results)
+          lst
+        }
+      }
     }
 
-    batches.foldLeft(Future.successful(List.empty[A]))(processBatch)
+    val initial = Future.successful(ListBuffer.empty[A])
+    batches.foldLeft(initial)(processBatch).map(_.toList)
   }
 
   def transformationChain[T](chain: Seq[Transformation[T]])(using ExecutionContext): Transformation[T] = (t: T) => () => {
@@ -48,7 +83,7 @@ object DelayedFutureOpsImpl extends DelayedFutureOps {
           }
         }
       }.flatMap { result =>
-        if (result == t) Future.failed(new RuntimeException("All transformations failed"))
+        if (result == t) Future.failed(new RuntimeException("Все трансформации не удались"))
         else Future.successful(result)
       }
     }
